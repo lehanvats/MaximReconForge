@@ -1,18 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { startDummyScan } from "../services/dummyScanApi";
-
-const spinnerFrames = [
-  "⠋",
-  "⠙",
-  "⠹",
-  "⠸",
-  "⠼",
-  "⠴",
-  "⠦",
-  "⠧",
-  "⠇",
-  "⠏",
-];
+import { openLiveSocket } from "../services/scanService";
 
 const previewSteps = [
   {
@@ -53,20 +40,24 @@ const previewSteps = [
   },
 ];
 
-function createProgressBar(progress, length = 18) {
-  const safeProgress = Math.min(100, Math.max(0, progress));
-  const filled = Math.round((safeProgress / 100) * length);
-  const empty = length - filled;
-
-  return `[${"█".repeat(filled)}${"░".repeat(empty)}]`;
+// Colour a streamed log line by its severity marker / level.
+function classForLog(line, level) {
+  if (/^\[SUCCESS\]/i.test(line)) return "success";
+  if (/^\[ERROR\]/i.test(line) || level === "ERROR") return "error";
+  if (/^\[WARNING\]/i.test(line) || level === "WARNING") return "warning";
+  if (/^\[/.test(line)) return "info";
+  return "dim";
 }
 
 function Terminal({
   mode = "preview",
   target = "example.com",
+  engagementId = null,
   onComplete,
   onProgress,
   onStageChange,
+  onCounts,
+  onError,
 }) {
   const [lines, setLines] = useState([]);
   const [activeCommandId, setActiveCommandId] = useState(null);
@@ -74,315 +65,206 @@ function Terminal({
   const terminalBodyRef = useRef(null);
   const lineRefs = useRef({});
 
+  // --- Preview mode: looping fake terminal shown on the landing page ---
   useEffect(() => {
-    const abortController = new AbortController();
+    if (mode !== "preview") return undefined;
 
     let cancelled = false;
     let timeoutId;
-    let spinnerId;
+    let currentIndex = 0;
 
     setLines([]);
     setActiveCommandId(null);
     lineRefs.current = {};
 
-    const wait = (delay) =>
-      new Promise((resolve) => {
-        timeoutId = setTimeout(resolve, delay);
-      });
-
     const addLine = (text, className = "dim") => {
       if (cancelled) return null;
-
       const id = crypto.randomUUID();
-
-      setLines((currentLines) => [
-        ...currentLines,
-        {
-          id,
-          text,
-          className,
-        },
-      ]);
-
+      setLines((current) => [...current, { id, text, className }]);
       return id;
     };
 
-    const updateLine = (id, text, className) => {
-      if (cancelled || !id) return;
+    const showNextLine = () => {
+      if (cancelled) return;
 
-      setLines((currentLines) =>
-        currentLines.map((line) =>
-          line.id === id
-            ? {
-                ...line,
-                text,
-                className,
-              }
-            : line,
-        ),
-      );
+      if (currentIndex >= previewSteps.length) {
+        timeoutId = setTimeout(() => {
+          if (cancelled) return;
+          setLines([]);
+          setActiveCommandId(null);
+          lineRefs.current = {};
+          currentIndex = 0;
+          showNextLine();
+        }, 1800);
+        return;
+      }
+
+      const step = previewSteps[currentIndex];
+      const lineId = addLine(step.text, step.className);
+      if (step.className === "command") {
+        setActiveCommandId(lineId);
+      }
+      currentIndex += 1;
+      timeoutId = setTimeout(showNextLine, 450);
     };
 
-    const getLineClassName = (outputLine) => {
-      if (outputLine.startsWith("[SUCCESS]")) {
-        return "success";
-      }
-
-      if (outputLine.startsWith("[INFO]")) {
-        return "info";
-      }
-
-      if (outputLine.startsWith("[WARNING]")) {
-        return "warning";
-      }
-
-      if (outputLine.startsWith("[ERROR]")) {
-        return "error";
-      }
-
-      return "dim";
-    };
-
-    const addLinesSequentially = async (
-      outputLines,
-      delay = 240,
-    ) => {
-      for (const outputLine of outputLines) {
-        if (cancelled) return;
-
-        addLine(
-          outputLine,
-          getLineClassName(outputLine),
-        );
-
-        await wait(delay);
-      }
-    };
-
-    const runPreview = () => {
-      let currentIndex = 0;
-
-      const showNextLine = () => {
-        if (cancelled) return;
-
-        if (currentIndex >= previewSteps.length) {
-          timeoutId = setTimeout(() => {
-            if (cancelled) return;
-
-            setLines([]);
-            setActiveCommandId(null);
-            lineRefs.current = {};
-
-            currentIndex = 0;
-            showNextLine();
-          }, 1800);
-
-          return;
-        }
-
-        const step = previewSteps[currentIndex];
-        const lineId = addLine(step.text, step.className);
-
-        if (step.className === "command") {
-          setActiveCommandId(lineId);
-        }
-
-        currentIndex += 1;
-        timeoutId = setTimeout(showNextLine, 450);
-      };
-
-      showNextLine();
-    };
-
-    const runScan = async () => {
-      const initialCommandId = addLine(
-        `❯ reconforge scan ${target} --full`,
-        "command",
-      );
-
-      setActiveCommandId(initialCommandId);
-
-      addLine("", "dim");
-
-      let activeSpinnerLineId = null;
-      let spinnerFrame = 0;
-
-      try {
-        await startDummyScan(
-          target,
-          {
-            onStart: ({ scanId }) => {
-              if (cancelled) return;
-
-              addLine(`[INFO] Scan ID: ${scanId}`, "dim");
-
-              addLine(
-                "[INFO] Initializing reconnaissance pipeline",
-                "info",
-              );
-
-              addLine("", "dim");
-            },
-
-            onStageStart: (stage) => {
-              if (cancelled) return;
-
-              onStageChange?.({
-                id: stage.id,
-                label: stage.label,
-                index: stage.index,
-                status: "running",
-              });
-
-              const commandLineId = addLine(
-                `$ ${stage.command}`,
-                "command",
-              );
-
-              /*
-               * Only a new command changes the scroll position.
-               * Output lines will continue appearing underneath it.
-               */
-              setActiveCommandId(commandLineId);
-
-              spinnerFrame = 0;
-
-              activeSpinnerLineId = addLine(
-                `${spinnerFrames[0]} ${stage.runningMessage}...`,
-                "info",
-              );
-
-              clearInterval(spinnerId);
-
-              spinnerId = setInterval(() => {
-                if (cancelled) return;
-
-                spinnerFrame =
-                  (spinnerFrame + 1) %
-                  spinnerFrames.length;
-              }, 80);
-            },
-
-            onStageProgress: (stage) => {
-              if (cancelled) return;
-
-              onProgress?.({
-                progress: stage.progress,
-                stageId: stage.id,
-                stageLabel: stage.label,
-                processed: stage.processed,
-                total: stage.total,
-                elapsedSeconds: stage.elapsedSeconds,
-              });
-
-              const progressBar = createProgressBar(
-                stage.stageProgress,
-              );
-
-              updateLine(
-                activeSpinnerLineId,
-                `${spinnerFrames[spinnerFrame]} ${
-                  stage.runningMessage
-                } ${progressBar} ${
-                  stage.stageProgress
-                }% · ${stage.processed}/${
-                  stage.total
-                } · ${stage.elapsedSeconds}s`,
-                "info",
-              );
-            },
-
-            onStageComplete: async (stage) => {
-              if (cancelled) return;
-
-              clearInterval(spinnerId);
-
-              updateLine(
-                activeSpinnerLineId,
-                `[SUCCESS] ${stage.label} completed`,
-                "success",
-              );
-
-              await addLinesSequentially(
-                stage.output,
-                240,
-              );
-
-              if (cancelled) return;
-
-              addLine("", "dim");
-
-              onStageChange?.({
-                id: stage.id,
-                label: stage.label,
-                index: stage.index,
-                status: "completed",
-              });
-            },
-
-            onComplete: (result) => {
-              if (cancelled) return;
-
-              addLine(
-                `[SUCCESS] Scan completed in ${result.durationSeconds}s`,
-                "success",
-              );
-
-              onProgress?.({
-                progress: 100,
-                stageId: "completed",
-                stageLabel: "Scan complete",
-                processed: 1,
-                total: 1,
-                elapsedSeconds: result.durationSeconds,
-              });
-
-              onComplete?.(result);
-            },
-          },
-          {
-            signal: abortController.signal,
-          },
-        );
-      } catch (error) {
-        clearInterval(spinnerId);
-
-        if (error.name === "AbortError") {
-          return;
-        }
-
-        addLine(
-          `[ERROR] ${error.message || "Scan failed"}`,
-          "error",
-        );
-      }
-    };
-
-    if (mode === "preview") {
-      runPreview();
-    } else {
-      runScan();
-    }
+    showNextLine();
 
     return () => {
       cancelled = true;
-
-      abortController.abort();
-
       clearTimeout(timeoutId);
-      clearInterval(spinnerId);
+    };
+  }, [mode]);
+
+  // --- Scanning mode: live event stream from the backend over WebSocket ---
+  useEffect(() => {
+    if (mode !== "scanning" || !engagementId) return undefined;
+
+    let cancelled = false;
+
+    setLines([]);
+    setActiveCommandId(null);
+    lineRefs.current = {};
+
+    const addLine = (text, className = "dim") => {
+      if (cancelled) return null;
+      const id = crypto.randomUUID();
+      setLines((current) => [...current, { id, text, className }]);
+      return id;
+    };
+
+    const initialCommandId = addLine(
+      `❯ reconforge scan ${target} --full`,
+      "command",
+    );
+    setActiveCommandId(initialCommandId);
+    addLine("", "dim");
+    addLine("[INFO] Connecting to assessment engine...", "info");
+
+    const socket = openLiveSocket(engagementId);
+
+    socket.onmessage = (message) => {
+      if (cancelled) return;
+
+      let event;
+      try {
+        event = JSON.parse(message.data);
+      } catch {
+        return;
+      }
+
+      switch (event.type) {
+        case "started":
+          addLine(`[INFO] Engagement live for ${event.target}`, "info");
+          addLine("", "dim");
+          break;
+
+        case "log":
+          addLine(event.line, classForLog(event.line, event.level));
+          break;
+
+        case "phase": {
+          onStageChange?.({
+            id: event.stageId,
+            label: event.label,
+            status: "running",
+            completedStages: event.completedStages,
+          });
+          onProgress?.({
+            progress: event.progress,
+            stageId: event.stageId,
+            stageLabel: event.label,
+            completedStages: event.completedStages,
+          });
+          // Structured phase marker (also anchors terminal auto-scroll).
+          const phaseCommandId = addLine(`— ${event.label}`, "command");
+          setActiveCommandId(phaseCommandId);
+          break;
+        }
+
+        case "counts":
+          onCounts?.(event.summary);
+          break;
+
+        case "complete":
+          addLine("", "dim");
+          addLine(
+            `[SUCCESS] Assessment completed in ${event.durationSeconds}s`,
+            "success",
+          );
+          onCounts?.(event.summary);
+          onProgress?.({
+            progress: 100,
+            stageId: "reporting",
+            stageLabel: "Complete",
+          });
+          onComplete?.({
+            status: event.status,
+            durationSeconds: event.durationSeconds,
+            summary: event.summary,
+            hasReport: event.hasReport,
+            findingsCount: event.findingsCount,
+          });
+          break;
+
+        case "error":
+          addLine(`[ERROR] ${event.message}`, "error");
+          onError?.(event.message);
+          break;
+
+        case "end":
+          try {
+            socket.close();
+          } catch {
+            // already closing
+          }
+          break;
+
+        default:
+          break;
+      }
+    };
+
+    socket.onerror = () => {
+      if (cancelled) return;
+      addLine(
+        "[ERROR] Live connection error — the backend may not be reachable.",
+        "error",
+      );
+      onError?.("Live connection error");
+    };
+
+    socket.onclose = (closeEvent) => {
+      if (cancelled) return;
+      // 4401 = not authorized, 4404 = not found (see backend websocket.py).
+      if (closeEvent.code === 4401) {
+        addLine("[ERROR] Not authorized to view this engagement.", "error");
+        onError?.("Not authorized");
+      }
+    };
+
+    return () => {
+      cancelled = true;
+      try {
+        socket.close();
+      } catch {
+        // ignore
+      }
     };
   }, [
     mode,
+    engagementId,
     target,
     onComplete,
     onProgress,
     onStageChange,
+    onCounts,
+    onError,
   ]);
 
   /*
-   * Scroll only when a new command becomes active.
-   * The command is placed roughly 16% below the terminal top.
+   * Scroll so the newest command/phase marker sits near the top; output
+   * lines then flow underneath it.
    */
   useEffect(() => {
     const terminalBody = terminalBodyRef.current;
@@ -391,11 +273,8 @@ function Terminal({
     if (!terminalBody || !activeCommand) return;
 
     const desiredTopOffset = terminalBody.clientHeight * 0.16;
-
     const targetScrollPosition =
-      activeCommand.offsetTop -
-      terminalBody.offsetTop -
-      desiredTopOffset;
+      activeCommand.offsetTop - terminalBody.offsetTop - desiredTopOffset;
 
     terminalBody.scrollTo({
       top: Math.max(0, targetScrollPosition),
