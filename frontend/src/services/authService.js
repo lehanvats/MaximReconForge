@@ -1,5 +1,22 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
+// Demo account — works even when the backend is offline.
+const DEMO_EMAIL = "test@maximrecon.com";
+const DEMO_PASSWORD = "test1234";
+const DEMO_PROFILE = { id: "demo", email: DEMO_EMAIL, username: "test" };
+
+function _setStoredSession(profile) {
+  sessionStorage.setItem("demo_user", JSON.stringify(profile));
+}
+
+export function getStoredSession() {
+  try {
+    return JSON.parse(sessionStorage.getItem("demo_user"));
+  } catch {
+    return null;
+  }
+}
+
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
@@ -38,7 +55,12 @@ export function register(email, password) {
   });
 }
 
-export function login(email, password) {
+export async function login(email, password) {
+  // Demo shortcut — no backend needed.
+  if (email === DEMO_EMAIL && password === DEMO_PASSWORD) {
+    _setStoredSession(DEMO_PROFILE);
+    return DEMO_PROFILE;
+  }
   return request("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
@@ -46,9 +68,12 @@ export function login(email, password) {
 }
 
 export function logout() {
+  sessionStorage.removeItem("demo_user");
   return request("/auth/logout", { method: "POST" });
 }
 
 export function fetchCurrentUser() {
+  const demo = getStoredSession();
+  if (demo) return Promise.resolve(demo);
   return request("/auth/me", { method: "GET" });
 }
