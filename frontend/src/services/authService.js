@@ -56,15 +56,21 @@ export function register(email, password) {
 }
 
 export async function login(email, password) {
-  // Demo shortcut — no backend needed.
-  if (email === DEMO_EMAIL && password === DEMO_PASSWORD) {
-    _setStoredSession(DEMO_PROFILE);
-    return DEMO_PROFILE;
+  try {
+    const user = await request("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+    sessionStorage.removeItem("demo_user");
+    return user;
+  } catch (err) {
+    // If backend login fails for demo credentials, fallback to client session
+    if (email === DEMO_EMAIL && password === DEMO_PASSWORD) {
+      _setStoredSession(DEMO_PROFILE);
+      return DEMO_PROFILE;
+    }
+    throw err;
   }
-  return request("/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  });
 }
 
 export function logout() {
@@ -73,7 +79,9 @@ export function logout() {
 }
 
 export function fetchCurrentUser() {
-  const demo = getStoredSession();
-  if (demo) return Promise.resolve(demo);
-  return request("/auth/me", { method: "GET" });
+  return request("/auth/me", { method: "GET" }).catch((err) => {
+    const demo = getStoredSession();
+    if (demo) return demo;
+    throw err;
+  });
 }
