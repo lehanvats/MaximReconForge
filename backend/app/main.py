@@ -7,9 +7,15 @@ from app.api.websocket import router as websocket_router
 
 app = FastAPI(title="MaximReconForge")
 
+_allowed_origins = [settings.frontend_origin] + [
+    origin.strip()
+    for origin in settings.extra_cors_origins.split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

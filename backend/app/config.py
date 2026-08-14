@@ -26,6 +26,14 @@ class Settings(BaseSettings):
 
     # --- Frontend ---
     frontend_origin: str = "http://localhost:3000"
+    # Extra allowed browser origins for local dev (comma-separated). The Vite
+    # dev server may run on 3000 or 5173 depending on how it's started.
+    extra_cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:3000"
+
+    # --- Execution mode ---
+    # Localhost mode: run the recon graph inline in the API process and stream
+    # progress over WebSocket, instead of dispatching to the Redis/arq worker.
+    run_scans_inline: bool = True
 
     # --- Auth cookies ---
     # When the frontend (e.g. Vercel) and backend live on different registrable

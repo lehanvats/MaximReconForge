@@ -1,6 +1,8 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -15,6 +17,7 @@ import {
 
 import Terminal from "../components/Terminal";
 import ScanResults from "../components/ScanResults";
+import { createEngagement } from "../services/scanService";
 
 const scanStages = [
   {
@@ -23,29 +26,29 @@ const scanStages = [
     shortLabel: "Validation",
   },
   {
-    id: "subfinder",
-    label: "Subdomain discovery",
-    shortLabel: "Subdomains",
+    id: "recon",
+    label: "Reconnaissance",
+    shortLabel: "Recon",
   },
   {
-    id: "assetfinder",
-    label: "Passive result merging",
-    shortLabel: "Assets",
+    id: "enumeration",
+    label: "Enumeration",
+    shortLabel: "Enumeration",
   },
   {
-    id: "httpx",
-    label: "Live host probing",
-    shortLabel: "Live hosts",
+    id: "vuln_analysis",
+    label: "Vulnerability analysis",
+    shortLabel: "Vuln analysis",
   },
   {
-    id: "katana",
-    label: "Endpoint crawling",
-    shortLabel: "Endpoints",
+    id: "exploitation",
+    label: "Exploitation",
+    shortLabel: "Exploitation",
   },
   {
-    id: "nmap",
-    label: "Service scanning",
-    shortLabel: "Services",
+    id: "reporting",
+    label: "Report generation",
+    shortLabel: "Reporting",
   },
 ];
 
@@ -118,34 +121,81 @@ function ScanPage() {
     setShowTerminal,
   ] = useState(true);
 
+  const [engagementId, setEngagementId] =
+    useState(null);
+
+  const [scanError, setScanError] =
+    useState(null);
+
+  const [liveSummary, setLiveSummary] =
+    useState(null);
+
+  // Create the engagement once (guarded against StrictMode's double effect).
+  const createStartedRef = useRef(false);
+
+  useEffect(() => {
+    if (!target || createStartedRef.current) return;
+    createStartedRef.current = true;
+
+    createEngagement(target)
+      .then((engagement) => {
+        setEngagementId(engagement.id);
+      })
+      .catch((error) => {
+        setScanError(
+          error?.message ||
+            "Could not start the scan. Please try again.",
+        );
+      });
+  }, [target]);
+
+  // Client-side elapsed timer (the backend streams phases, not a clock).
+  useEffect(() => {
+    if (scanComplete || !engagementId) return undefined;
+
+    const startedAt = Date.now();
+    const intervalId = window.setInterval(() => {
+      setElapsedSeconds(
+        Math.floor((Date.now() - startedAt) / 1000),
+      );
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [scanComplete, engagementId]);
+
+  const handleCounts = useCallback((counts) => {
+    if (!counts) return;
+    setLiveSummary(counts);
+
+    const discovered =
+      (counts.subdomains ?? 0) +
+      (counts.liveHosts ?? 0) +
+      (counts.urls ?? 0) +
+      (counts.openPorts ?? 0);
+
+    setProcessed(discovered);
+    setTotal(discovered);
+  }, []);
+
+  const handleScanError = useCallback((message) => {
+    setScanError(message || "Scan failed");
+  }, []);
+
   const handleProgress = useCallback(
     (progressData) => {
-      setProgress(
-        progressData.progress ?? 0,
-      );
+      if (progressData.progress != null) {
+        setProgress(progressData.progress);
+      }
 
-      setCurrentStageId(
-        progressData.stageId ??
-          "validation",
-      );
+      if (progressData.stageId) {
+        setCurrentStageId(progressData.stageId);
+      }
 
-      setCurrentStageLabel(
-        progressData.stageLabel ??
-          "Running scan",
-      );
-
-      setProcessed(
-        progressData.processed ?? 0,
-      );
-
-      setTotal(
-        progressData.total ?? 0,
-      );
-
-      setElapsedSeconds(
-        progressData.elapsedSeconds ??
-          0,
-      );
+      if (progressData.stageLabel) {
+        setCurrentStageLabel(
+          progressData.stageLabel,
+        );
+      }
     },
     [],
   );
@@ -153,29 +203,11 @@ function ScanPage() {
   const handleStageChange = useCallback(
     (stage) => {
       setCurrentStageId(stage.id);
-      setCurrentStageLabel(
-        stage.label,
-      );
+      setCurrentStageLabel(stage.label);
 
-      if (
-        stage.status === "completed"
-      ) {
-        setCompletedStages(
-          (currentStages) => {
-            if (
-              currentStages.includes(
-                stage.id,
-              )
-            ) {
-              return currentStages;
-            }
-
-            return [
-              ...currentStages,
-              stage.id,
-            ];
-          },
-        );
+      // Backend sends the authoritative list of finished stages.
+      if (Array.isArray(stage.completedStages)) {
+        setCompletedStages(stage.completedStages);
       }
     },
     [],
@@ -219,14 +251,15 @@ function ScanPage() {
 
   const summary = useMemo(() => {
     return (
-      scanResult?.summary ?? {
-        subdomains: 128,
-        liveHosts: 52,
-        urls: 231,
-        openPorts: 7,
+      scanResult?.summary ??
+      liveSummary ?? {
+        subdomains: 0,
+        liveHosts: 0,
+        urls: 0,
+        openPorts: 0,
       }
     );
-  }, [scanResult]);
+  }, [scanResult, liveSummary]);
 
   const handleToggleTerminal =
     useCallback(() => {
@@ -346,6 +379,15 @@ function ScanPage() {
         </motion.div>
       </div>
 
+      {/* Error banner */}
+      {scanError && (
+        <div className="mx-auto mb-2 w-full max-w-[900px] px-6">
+          <div className="rounded-[12px] border border-[#ff5f57]/30 bg-[#ff5f57]/[0.08] px-5 py-4 text-[13px] text-[#ffb3ae]">
+            <span className="font-semibold">Scan error:</span> {scanError}
+          </div>
+        </div>
+      )}
+
       {/* Terminal and progress workspace */}
       <motion.div
         initial={false}
@@ -419,6 +461,7 @@ function ScanPage() {
             <Terminal
               mode="scanning"
               target={target}
+              engagementId={engagementId}
               onComplete={
                 handleScanComplete
               }
@@ -428,6 +471,8 @@ function ScanPage() {
               onStageChange={
                 handleStageChange
               }
+              onCounts={handleCounts}
+              onError={handleScanError}
             />
           </motion.div>
 
@@ -854,6 +899,7 @@ function ScanPage() {
         {scanComplete && (
           <ScanResults
             target={target}
+            engagementId={engagementId}
             scanResult={scanResult}
             summary={summary}
             elapsedSeconds={
