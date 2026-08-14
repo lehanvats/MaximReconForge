@@ -33,16 +33,18 @@ def decode_token(token: str) -> dict:
     return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
 
 def set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
-    # secure=False in development only because there's no TLS/certbot cert yet to carry
-    # a Secure cookie over — flip this on once the app is served over HTTPS.
-    secure = settings.environment == "production"
+    # Cross-site deployments (frontend on Vercel, backend on the VPS) need
+    # SameSite=None; Secure so the browser replays the cookie on API calls.
+    # Same-origin/local dev keeps the SameSite=Lax, insecure defaults.
+    secure = settings.cookie_secure
+    samesite = settings.cookie_samesite.lower()
     response.set_cookie(
         ACCESS_COOKIE_NAME,
         access_token,
         max_age=settings.jwt_access_token_expire_minutes * 60,
         httponly=True,
         secure=secure,
-        samesite="lax",
+        samesite=samesite,
         path="/",
     )
     response.set_cookie(
@@ -51,13 +53,21 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         max_age=settings.jwt_refresh_token_expire_days * 24 * 60 * 60,
         httponly=True,
         secure=secure,
-        samesite="lax",
+        samesite=samesite,
         path="/",
     )
 
 def clear_auth_cookies(response: Response) -> None:
-    response.delete_cookie(ACCESS_COOKIE_NAME, path="/")
-    response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
+    # Deletion only takes effect if the attributes match the ones the cookie
+    # was set with, so mirror secure/samesite from settings.
+    secure = settings.cookie_secure
+    samesite = settings.cookie_samesite.lower()
+    response.delete_cookie(
+        ACCESS_COOKIE_NAME, path="/", secure=secure, samesite=samesite, httponly=True
+    )
+    response.delete_cookie(
+        REFRESH_COOKIE_NAME, path="/", secure=secure, samesite=samesite, httponly=True
+    )
 
 async def get_current_user(
     access_token: str | None = Cookie(default=None),

@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     # progress over WebSocket, instead of dispatching to the Redis/arq worker.
     run_scans_inline: bool = True
 
+    # --- Auth cookies ---
+    # When the frontend (e.g. Vercel) and backend live on different registrable
+    # domains, the auth cookies are cross-site and MUST be SameSite=None; Secure
+    # or the browser will not replay them. Set COOKIE_SAMESITE=none and
+    # COOKIE_SECURE=true in that deployment. Defaults keep local dev working.
+    cookie_samesite: str = "lax"  # "lax" | "strict" | "none"
+    cookie_secure: bool = False   # must be True whenever cookie_samesite="none"
+
     # --- LLM: Groq (active) via OpenAI-compatible API ---
     groq_api_key: str = ""
     llm_default_model: str = "openai/gpt-oss-120b"
@@ -79,6 +87,20 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "JWT_SECRET_KEY must be at least 32 characters long."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _require_secure_cross_site_cookies(self) -> "Settings":
+        """SameSite=None cookies are rejected by browsers unless also Secure.
+
+        Guard against a misconfiguration that would silently break auth: a
+        cross-site cookie set without Secure is dropped by the browser.
+        """
+        if self.cookie_samesite.lower() == "none" and not self.cookie_secure:
+            raise ValueError(
+                "COOKIE_SECURE must be true when COOKIE_SAMESITE=none "
+                "(browsers reject cross-site cookies that are not Secure)."
+            )
         return self
 
 
