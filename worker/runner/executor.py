@@ -48,16 +48,28 @@ def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
 
     elif tool_name == "run_httpx":
         targets = params.get("targets", [])
-        # Pass targets via stdin or direct CLI flags
-        cmd = ["httpx", "-silent", "-json", "-status-code", "-title", "-tech-detect"]
-        for t in targets:
-            cmd.extend(["-u", str(t)])
+        cmd = [
+            "pd-httpx",
+            "-silent",
+            "-json",
+            "-status-code",
+            "-title",
+            "-tech-detect",
+            "-follow-redirects",
+        ]
+        if isinstance(targets, list):
+            for t in targets:
+                cmd.extend(["-u", str(t)])
+        elif targets:
+            cmd.extend(["-u", str(targets)])
         return cmd
 
     elif tool_name == "run_naabu":
-        cmd = ["naabu", "-host", str(params["target"]), "-silent", "-json"]
+        cmd = ["naabu", "-host", str(params["target"]), "-silent", "-json", "-sa", "-scan-type", "c"]
         ports = params.get("ports")
-        if ports and ports != "top-1000":
+        if ports == "top-1000" or not ports:
+            cmd.extend(["-top-ports", "1000"])
+        elif ports:
             cmd.extend(["-p", str(ports)])
         return cmd
 
@@ -70,7 +82,7 @@ def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
         return cmd
 
     elif tool_name == "run_nuclei":
-        cmd = ["nuclei", "-target", str(params["target"]), "-json-export", "-"]
+        cmd = ["nuclei", "-target", str(params["target"]), "-j", "-as"]
         templates = params.get("templates", [])
         for t in templates:
             cmd.extend(["-t", str(t)])
@@ -86,6 +98,11 @@ def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
             str(params["target_url"]),
             "-w",
             f"/app/wordlists/{params.get('wordlist', 'common.txt')}",
+            "-r",  # Follow redirects
+            "-mc",
+            "all",
+            "-fc",
+            "404",
             "-o",
             "-",
             "-of",

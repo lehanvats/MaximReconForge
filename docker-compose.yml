@@ -30,8 +30,8 @@ services:
       - redis
     volumes:
       - ./engagements:/engagements
-    expose:
-      - "8000"
+    ports:
+      - "8000:8000"
     restart: unless-stopped
 
   worker:
@@ -44,7 +44,8 @@ services:
     user: "1000:1000"       # non-root
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:mode=1777
+      - /home/runner/.config:mode=0777,uid=1000,gid=1000
     deploy:
       resources:
         limits:

@@ -76,7 +76,18 @@ async def create_engagement(
         _inline_tasks.add(task)
         task.add_done_callback(_inline_tasks.discard)
     else:
-        await enqueue_recon_job(str(engagement.id))
+        # Docker worker mode: the graph still runs inline (it needs the LLM
+        # for vuln_analysis/exploitation/reporting), but recon_node dispatches
+        # the real tool pipeline to the Docker worker via ARQ/Redis.
+        task = asyncio.create_task(
+            run_engagement_inline(
+                engagement_id=str(engagement.id),
+                target_domain=engagement.target_domain,
+                user_id=str(current_user.id),
+            )
+        )
+        _inline_tasks.add(task)
+        task.add_done_callback(_inline_tasks.discard)
 
     return engagement
 
