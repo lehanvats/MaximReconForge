@@ -23,11 +23,10 @@ fi
 
 echo "==> [1/5] Creating a throwaway self-signed cert so nginx can boot..."
 mkdir -p "${CERT_DIR}"
-docker run --rm -v "$(pwd)/certbot/conf:/etc/letsencrypt" certbot/certbot \
-  sh -c "openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
-    -keyout /etc/letsencrypt/live/${DOMAIN}/privkey.pem \
-    -out /etc/letsencrypt/live/${DOMAIN}/fullchain.pem \
-    -subj '/CN=${DOMAIN}'"
+openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+  -keyout "${CERT_DIR}/privkey.pem" \
+  -out "${CERT_DIR}/fullchain.pem" \
+  -subj "/CN=${DOMAIN}"
 
 echo "==> [2/5] Starting nginx + backend..."
 docker compose up -d nginx backend
