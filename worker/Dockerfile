@@ -53,7 +53,19 @@ RUN chown -R runner:runner /app /home/runner
 
 USER runner
 
-# Pre-download nuclei templates into runner user home directory
-RUN nuclei -update-templates -duc
+# Explicitly target a template directory baked into the image (not the
+# container's HOME/.config — that path is mounted as an empty tmpfs at
+# runtime per docker-compose.yml, so anything nuclei writes there during
+# build is invisible to the running container). /app/nuclei-templates is
+# part of the read-only root filesystem at runtime, which is fine — nuclei
+# only needs to read these, never write them.
+#
+# IMPORTANT: no -duc (disable-update-check) here. Combined with
+# -update-templates it silently no-ops (nuclei reports success in ~10s but
+# installs nothing) — likely because disabling the update *check* also
+# skips the logic that decides an install is needed. -duc is fine (and
+# desirable) on the actual per-scan `nuclei` invocation in executor.py,
+# just not on this one-time install step.
+RUN nuclei -update-templates -ud /app/nuclei-templates
 
 CMD ["python", "-m", "runner.main"]

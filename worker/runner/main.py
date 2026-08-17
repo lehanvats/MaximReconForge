@@ -11,6 +11,7 @@ the backend) so the graph nodes can read them.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -245,6 +246,10 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
         err_msg = sf_result.error or sf_result.stderr[:200] or sf_result.stdout[:200]
         logger.warning("[RECON 1/4] subfinder failed: %s", err_msg)
 
+    # Persist after each step so a later-step timeout doesn't discard everything.
+    _write_findings(engagement_id, all_findings)
+    written_count = len(all_findings)
+
     # ── Step 2: HTTP Probing (httpx) ─────────────────────────────────────
     httpx_targets: list[str] = []
     for sub in subdomains:
@@ -274,6 +279,9 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
                 "severity": "info",
                 "description": f"Live host: {hr['url']} [{hr['status_code']}] {hr.get('title', '')}",
             })
+
+    _write_findings(engagement_id, all_findings[written_count:])
+    written_count = len(all_findings)
 
     # ── Step 2b: HTTP Header Inspection & Security Path Probing ─────────────
     # Uses `httpx` (async Python library) with HTTP/2 -> HTTP/1.1 -> Unverified 3-stage fallback,
@@ -338,10 +346,30 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
     targets_to_check = list(set([domain, domain.removeprefix("www.")] + subdomains))
     logger.info("[RECON 2b] Probing security headers and common paths for targets: %s", targets_to_check)
 
-    for sub in targets_to_check:
+    # Bounded concurrency: sequentially this loop was 1 (target) x 30s-per-unreachable-URL
+    # x (1 main + 11 paths) x N targets, which can burn the entire job_timeout on a domain
+    # with one unreachable hostname variant (e.g. bare apex with no HTTPS). Run fetches
+    # concurrently, capped so we don't hammer the target with dozens of simultaneous conns.
+    probe_paths = [
+        "/wp-admin", "/wp-login.php", "/config.php", "/wp-config.php",
+        "/configuration.php", "/sitemap.xml", "/crossdomain.xml",
+        "/.well-known/security.txt", "/api", "/swagger", "/graphql"
+    ]
+    # 8 concurrent connections against a single host tripped Vercel's edge
+    # rate-limiting on a real test target (every probe came back refused).
+    # 4 is still a large speedup over fully sequential while looking much
+    # less like a burst/flood to WAFs with low per-IP burst thresholds.
+    sem = asyncio.Semaphore(4)
+
+    async def _bounded_fetch(url: str) -> tuple[httpx_lib.Response | None, list[dict[str, Any]]]:
+        async with sem:
+            return await _fetch_url_with_fallback(url)
+
+    async def _probe_target(sub: str) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
         target_url = f"https://{sub}"
-        resp, probe_findings = await _fetch_url_with_fallback(target_url)
-        all_findings.extend(probe_findings)
+        resp, probe_findings = await _bounded_fetch(target_url)
+        findings.extend(probe_findings)
 
         if resp is not None:
             resp_headers = {k.lower(): v for k, v in resp.headers.items()}
@@ -359,7 +387,7 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
             ]
             for h_name, sev, score, desc in required_headers:
                 if h_name not in resp_headers:
-                    all_findings.append({
+                    findings.append({
                         "type": "missing_header",
                         "target": sub,
                         "url": target_url,
@@ -370,22 +398,15 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
                         "description": f"{desc} on {target_url}",
                     })
 
-        # Probe common security paths
-        probe_paths = [
-            "/wp-admin", "/wp-login.php", "/config.php", "/wp-config.php",
-            "/configuration.php", "/sitemap.xml", "/crossdomain.xml",
-            "/.well-known/security.txt", "/api", "/swagger", "/graphql"
-        ]
-        for path in probe_paths:
-            p_url = f"https://{sub}{path}"
-            p_resp, p_probe_findings = await _fetch_url_with_fallback(p_url)
+        path_results = await asyncio.gather(*(_bounded_fetch(f"https://{sub}{path}") for path in probe_paths))
+        for path, (p_resp, p_probe_findings) in zip(probe_paths, path_results):
+            findings.extend(p_probe_findings)
             code = p_resp.status_code if p_resp is not None else 0
-
             if code in (200, 403):
-                all_findings.append({
+                findings.append({
                     "type": "path_probe",
                     "target": sub,
-                    "url": p_url,
+                    "url": f"https://{sub}{path}",
                     "path": path,
                     "status_code": code,
                     "severity": "low" if code == 403 else "info",
@@ -393,6 +414,14 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
                     "tool": "path_probe",
                     "description": f"Path {path} returned HTTP {code} on {sub}",
                 })
+        return findings
+
+    target_results = await asyncio.gather(*(_probe_target(sub) for sub in targets_to_check))
+    for findings in target_results:
+        all_findings.extend(findings)
+
+    _write_findings(engagement_id, all_findings[written_count:])
+    written_count = len(all_findings)
 
     # ── Step 3: Port Scanning (naabu) ────────────────────────────────────
     logger.info("[RECON 3/4] Running naabu against %s", domain)
@@ -417,6 +446,9 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
             })
     else:
         logger.warning("[RECON 3/4] naabu failed: %s", naabu_result.error or naabu_result.stderr[:200])
+
+    _write_findings(engagement_id, all_findings[written_count:])
+    written_count = len(all_findings)
 
     # ── Step 4: Service Fingerprinting (nmap) ────────────────────────────
     port_str = ",".join(str(p) for p in open_ports) if open_ports else None
@@ -455,8 +487,8 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
     else:
         logger.warning("[RECON 4/4] nmap failed: %s", nmap_result.error or nmap_result.stderr[:200])
 
-    # ── Persist findings ─────────────────────────────────────────────────
-    _write_findings(engagement_id, all_findings)
+    # ── Persist remaining findings (steps 1-3 were already written incrementally) ──
+    _write_findings(engagement_id, all_findings[written_count:])
 
     elapsed = round(time.monotonic() - started_at, 1)
     logger.info(
@@ -485,7 +517,7 @@ class WorkerSettings:
     on_shutdown = shutdown
     functions = [run_tool_job, run_recon]
     max_jobs = 4
-    job_timeout = 600  # 10 min hard cap per job
+    job_timeout = 900  # 15 min hard cap per job (2b probing is now parallelized; this is a safety margin, not the primary fix)
 
 
 if __name__ == "__main__":

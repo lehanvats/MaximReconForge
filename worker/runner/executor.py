@@ -14,9 +14,34 @@ import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _system_resolvers() -> list[str]:
+    """Read nameserver IPs from /etc/resolv.conf.
+
+    naabu ships its own DNS client that queries its default public resolver
+    list directly over UDP/53, bypassing the container's configured
+    resolver. On some container networks (e.g. Docker Desktop's Hyper-V/WSL2
+    backend) only the container's own nameserver is reachable, so naabu's
+    default/hardcoded resolvers silently fail to resolve any hostname
+    ("no valid ipv4 or ipv6 targets were found"). Passing the system
+    resolver explicitly via -r fixes this without hardcoding an IP that
+    would only be correct on one platform.
+    """
+    try:
+        with open("/etc/resolv.conf", encoding="utf-8") as f:
+            return [
+                line.split()[1]
+                for line in f
+                if line.startswith("nameserver") and len(line.split()) >= 2
+            ]
+    except OSError:
+        return []
 
 
 @dataclass
@@ -66,6 +91,9 @@ def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
 
     elif tool_name == "run_naabu":
         cmd = ["naabu", "-host", str(params["target"]), "-silent", "-json", "-sa", "-scan-type", "c"]
+        resolvers = _system_resolvers()
+        if resolvers:
+            cmd.extend(["-r", ",".join(resolvers)])
         ports = params.get("ports")
         if ports == "top-1000" or not ports:
             cmd.extend(["-top-ports", "1000"])
@@ -82,7 +110,13 @@ def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
         return cmd
 
     elif tool_name == "run_nuclei":
-        cmd = ["nuclei", "-target", str(params["target"]), "-j", "-as"]
+        # Always point at the template directory baked into the image at build
+        # time (see Dockerfile). nuclei's own auto-detection resolves to the
+        # same path by default, but explicit is safer than relying on that —
+        # and it skips the slow "are templates installed?" check nuclei does
+        # when it isn't told, which used to fail outright since the runtime
+        # root filesystem is read-only.
+        cmd = ["nuclei", "-target", str(params["target"]), "-j", "-as", "-t", "/app/nuclei-templates"]
         templates = params.get("templates", [])
         for t in templates:
             cmd.extend(["-t", str(t)])

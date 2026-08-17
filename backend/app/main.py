@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +8,8 @@ from app.api.engagements import router as engagements_router
 from app.api.websocket import router as websocket_router
 from app.db.session import engine
 from app.db.models import Base
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
