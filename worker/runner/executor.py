@@ -81,6 +81,12 @@ def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
             "-title",
             "-tech-detect",
             "-follow-redirects",
+            # Default is 10s timeout with 0 retries. Under -silent, a single
+            # timed-out request produces zero output with no error at all —
+            # observed live against a flaky network where response times
+            # ranged 0.5s-6.5s+, causing intermittent silent result loss.
+            "-timeout", "20",
+            "-retries", "2",
         ]
         if isinstance(targets, list):
             for t in targets:
@@ -116,7 +122,17 @@ def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
         # and it skips the slow "are templates installed?" check nuclei does
         # when it isn't told, which used to fail outright since the runtime
         # root filesystem is read-only.
-        cmd = ["nuclei", "-target", str(params["target"]), "-j", "-as", "-t", "/app/nuclei-templates"]
+        #
+        # -rl (rate-limit) capped well below nuclei's default of 150 req/s:
+        # confirmed live that the default rate trips real targets' burst
+        # protection ("Skipped <target> from target list as found
+        # unresponsive 30 times", scan stalls with 0 further matches).
+        # 30 req/s completed a 906-template scan cleanly with real matches;
+        # 150 req/s never got past 23% before the target started refusing.
+        cmd = [
+            "nuclei", "-target", str(params["target"]), "-j", "-as",
+            "-t", "/app/nuclei-templates", "-rl", "30",
+        ]
         templates = params.get("templates", [])
         for t in templates:
             cmd.extend(["-t", str(t)])
@@ -142,6 +158,15 @@ def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
             "-of",
             "json",
             "-s",
+            # ffuf's default User-Agent gets blocked outright by at least one
+            # real target's Apache config (connection closes with EOF on
+            # every single request, confirmed live) — a normal browser UA
+            # fixes it completely. Also cap concurrency: ffuf defaults to 40
+            # threads, which trips burst-based rate limiting on real
+            # infrastructure (same class of issue as the step 2b prober).
+            "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "-t", "10",
+            "-timeout", "15",
         ]
         exts = params.get("extensions")
         if exts:

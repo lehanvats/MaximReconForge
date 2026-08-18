@@ -60,12 +60,17 @@ USER runner
 # part of the read-only root filesystem at runtime, which is fine — nuclei
 # only needs to read these, never write them.
 #
-# IMPORTANT: no -duc (disable-update-check) here. Combined with
-# -update-templates it silently no-ops (nuclei reports success in ~10s but
-# installs nothing) — likely because disabling the update *check* also
-# skips the logic that decides an install is needed. -duc is fine (and
-# desirable) on the actual per-scan `nuclei` invocation in executor.py,
-# just not on this one-time install step.
-RUN nuclei -update-templates -ud /app/nuclei-templates
+# Deliberately NOT using `nuclei -update-templates`: its built-in downloader
+# has its own short, non-configurable timeout and no retry/resume. On a slow
+# or flaky link (observed: ~80KB/s to GitHub, well under nuclei's deadline)
+# it fails silently mid-download and nuclei just reports "outdated" forever
+# without installing anything. curl with --retry/-C- (same pattern as the
+# tool binaries above) tolerates that fine.
+RUN mkdir -p /app/nuclei-templates \
+    && curl --retry 10 --retry-delay 5 --retry-all-errors -C - --max-time 1200 -fSL \
+       "https://github.com/projectdiscovery/nuclei-templates/archive/refs/heads/main.tar.gz" \
+       -o /tmp/nuclei-templates.tar.gz \
+    && tar -xzf /tmp/nuclei-templates.tar.gz -C /app/nuclei-templates --strip-components=1 \
+    && rm /tmp/nuclei-templates.tar.gz
 
 CMD ["python", "-m", "runner.main"]

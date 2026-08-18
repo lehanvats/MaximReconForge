@@ -331,14 +331,43 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
                 })
                 return resp, extra_findings
         except Exception as e3:
-            logger.warning("[RECON 2b] Stage 3 (Unverified) failed for %s: %s", url, e3)
+            logger.info("[RECON 2b] Stage 3 (Unverified) failed for %s: %s", url, e3)
+
+        # Stage 4: plain HTTP fallback. Some hosts (e.g. scanme.nmap.org) don't
+        # serve HTTPS at all, so every TLS stage above fails on connection —
+        # not a cert or negotiation issue. Only meaningful if url was https://.
+        if url.startswith("https://"):
+            http_url = "http://" + url[len("https://"):]
+            try:
+                async with httpx_lib.AsyncClient(http2=False, verify=False, timeout=10.0, follow_redirects=True) as client:
+                    resp = await client.get(http_url, headers=headers)
+                    extra_findings.append({
+                        "type": "https_unavailable",
+                        "target": http_url,
+                        "severity": "medium",
+                        "cvss_score": 5.3,
+                        "tool": "http_prober",
+                        "description": f"{url} has no working HTTPS listener; site is only reachable over plain HTTP ({http_url})",
+                    })
+                    return resp, extra_findings
+            except Exception as e4:
+                logger.warning("[RECON 2b] Stage 4 (plain HTTP) failed for %s: %s", http_url, e4)
+                extra_findings.append({
+                    "type": "probe_failed",
+                    "target": url,
+                    "severity": "info",
+                    "cvss_score": 0.0,
+                    "tool": "http_prober",
+                    "description": f"Target {url} probe failed on all HTTPS stages and plain HTTP fallback: {e4}",
+                })
+        else:
             extra_findings.append({
                 "type": "probe_failed",
                 "target": url,
                 "severity": "info",
                 "cvss_score": 0.0,
                 "tool": "http_prober",
-                "description": f"Target {url} probe failed (connection refused/rate-limited: {e3})",
+                "description": f"Target {url} probe failed (connection refused/rate-limited)",
             })
 
         return None, extra_findings
@@ -372,8 +401,9 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
         findings.extend(probe_findings)
 
         if resp is not None:
+            actual_url = str(resp.url)
             resp_headers = {k.lower(): v for k, v in resp.headers.items()}
-            logger.info("[RECON 2b] Successfully fetched %s [HTTP %d] with %d headers", target_url, resp.status_code, len(resp_headers))
+            logger.info("[RECON 2b] Successfully fetched %s [HTTP %d] with %d headers", actual_url, resp.status_code, len(resp_headers))
 
             required_headers = [
                 ("content-security-policy", "Medium", 5.3, "Missing Content-Security-Policy header"),
@@ -390,12 +420,12 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
                     findings.append({
                         "type": "missing_header",
                         "target": sub,
-                        "url": target_url,
+                        "url": actual_url,
                         "header": h_name,
                         "severity": sev.lower(),
                         "cvss_score": score,
                         "tool": "http_headers",
-                        "description": f"{desc} on {target_url}",
+                        "description": f"{desc} on {actual_url}",
                     })
 
         path_results = await asyncio.gather(*(_bounded_fetch(f"https://{sub}{path}") for path in probe_paths))
@@ -406,7 +436,7 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
                 findings.append({
                     "type": "path_probe",
                     "target": sub,
-                    "url": f"https://{sub}{path}",
+                    "url": str(p_resp.url) if p_resp is not None else f"https://{sub}{path}",
                     "path": path,
                     "status_code": code,
                     "severity": "low" if code == 403 else "info",
