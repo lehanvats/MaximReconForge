@@ -178,6 +178,20 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     logger.info("Worker shut down cleanly.")
 
 
+# Tools that can legitimately run past the generic 300s default. Confirmed
+# live: an unscoped nuclei -as call against the full ~14k-template set took
+# 300.03s and hit the default timeout exactly — a scoped ~900-template run
+# completes in ~2:43, so the full set genuinely needs more than 5 minutes.
+# ffuf/sqlmap get the same floor since they scale with wordlist/param count
+# the same way. Only raises the floor — an explicitly larger caller-provided
+# timeout is still respected.
+_SLOW_TOOL_MIN_TIMEOUT = {
+    "run_nuclei": 600,
+    "run_ffuf": 450,
+    "run_sqlmap": 450,
+}
+
+
 async def run_tool_job(
     ctx: dict[str, Any],
     engagement_id: str,
@@ -189,10 +203,12 @@ async def run_tool_job(
     """ARQ job executing a single whitelisted tool call request."""
     logger.info("Worker received job: engagement=%s, tool=%s", engagement_id, tool_name)
 
+    effective_timeout = max(timeout_seconds, _SLOW_TOOL_MIN_TIMEOUT.get(tool_name, 0))
+
     result = await execute_tool_call(
         tool_name=tool_name,
         params=params,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=effective_timeout,
         output_cap_bytes=output_cap_bytes,
     )
 

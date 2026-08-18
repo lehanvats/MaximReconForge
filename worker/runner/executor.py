@@ -116,26 +116,29 @@ def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
         return cmd
 
     elif tool_name == "run_nuclei":
-        # Always point at the template directory baked into the image at build
-        # time (see Dockerfile). nuclei's own auto-detection resolves to the
-        # same path by default, but explicit is safer than relying on that —
-        # and it skips the slow "are templates installed?" check nuclei does
-        # when it isn't told, which used to fail outright since the runtime
-        # root filesystem is read-only.
-        #
         # -rl (rate-limit) capped well below nuclei's default of 150 req/s:
         # confirmed live that the default rate trips real targets' burst
         # protection ("Skipped <target> from target list as found
         # unresponsive 30 times", scan stalls with 0 further matches).
         # 30 req/s completed a 906-template scan cleanly with real matches;
         # 150 req/s never got past 23% before the target started refusing.
-        cmd = [
-            "nuclei", "-target", str(params["target"]), "-j", "-as",
-            "-t", "/app/nuclei-templates", "-rl", "30",
-        ]
+        cmd = ["nuclei", "-target", str(params["target"]), "-j", "-as", "-rl", "30"]
+
+        # nuclei's -t flags are additive (union), not a filter — a -severity
+        # filter only narrows AFTER every matching template is parsed into
+        # memory. Previously this always included -t /app/nuclei-templates
+        # (the full 13,963-file tree) regardless of what the caller scoped,
+        # so a "severity: medium" call still parsed the entire tree first —
+        # confirmed live as the trigger for repeated worker OOM crashes.
+        # Only fall back to the full baked-in tree when the caller gave no
+        # specific templates to scope to.
         templates = params.get("templates", [])
-        for t in templates:
-            cmd.extend(["-t", str(t)])
+        if templates:
+            for t in templates:
+                cmd.extend(["-t", str(t)])
+        else:
+            cmd.extend(["-t", "/app/nuclei-templates"])
+
         severity = params.get("severity")
         if severity:
             cmd.extend(["-severity", str(severity)])
