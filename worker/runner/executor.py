@@ -66,7 +66,16 @@ def _truncate(data: bytes, cap: int, marker: bytes) -> bytes:
 def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
     """Map tool_name and validated Pydantic params to a safe argv command list."""
     if tool_name == "run_subfinder":
-        return ["subfinder", "-d", str(params["domain"]), "-silent", "-json"]
+        # -timeout bounds each source; -max-time caps total enumeration so a
+        # single slow/hanging passive source can't burn the whole job budget
+        # (subfinder returns whatever it found so far when -max-time elapses).
+        # -max-time is 1 min, comfortably under the 120s executor cap in
+        # run_recon, so subfinder self-terminates and returns partial results
+        # (success) instead of being hard-killed at the cap with nothing.
+        return [
+            "subfinder", "-d", str(params["domain"]),
+            "-silent", "-json", "-timeout", "20", "-max-time", "1",
+        ]
 
     elif tool_name == "run_amass":
         return ["amass", "enum", "-passive", "-d", str(params["domain"])]
@@ -81,6 +90,14 @@ def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
             "-title",
             "-tech-detect",
             "-follow-redirects",
+            # Without an explicit timeout/retries, httpx uses a short default and
+            # gives up after one attempt. On hosts where the target has an AAAA
+            # record but the box has no working IPv6 egress, the first dial stalls
+            # on IPv6 and the probe is silently dropped — so genuinely-live HTTP
+            # hosts get reported as dead. A longer timeout plus retries lets the
+            # IPv4 attempt land instead of losing the host entirely.
+            "-timeout", "15",
+            "-retries", "2",
         ]
         if isinstance(targets, list):
             for t in targets:
@@ -110,16 +127,26 @@ def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
         return cmd
 
     elif tool_name == "run_nuclei":
-        # Always point at the template directory baked into the image at build
-        # time (see Dockerfile). nuclei's own auto-detection resolves to the
-        # same path by default, but explicit is safer than relying on that —
-        # and it skips the slow "are templates installed?" check nuclei does
-        # when it isn't told, which used to fail outright since the runtime
-        # root filesystem is read-only.
-        cmd = ["nuclei", "-target", str(params["target"]), "-j", "-as", "-t", "/app/nuclei-templates"]
+        # -rl (rate limit) capped well below nuclei's default of 150 req/s.
+        # Confirmed live that the default trips real targets' burst protection
+        # ("found unresponsive 30 times", scan stalls at ~23% with 0 further
+        # matches); 30 req/s completes a full scan cleanly with real matches.
+        # This is almost certainly why default-rate nuclei runs came back empty.
+        cmd = ["nuclei", "-target", str(params["target"]), "-j", "-as", "-rl", "30"]
+
+        # nuclei's -t flags are additive (a union), and -severity only narrows
+        # AFTER every matching template is parsed into memory. Passing the full
+        # /app/nuclei-templates tree (~14k files) on every call — even a scoped
+        # "severity: medium" one — parses the whole tree first, which OOM-kills
+        # the memory-capped worker. Only fall back to the full baked-in tree
+        # when the caller scoped no specific templates.
         templates = params.get("templates", [])
-        for t in templates:
-            cmd.extend(["-t", str(t)])
+        if templates:
+            for t in templates:
+                cmd.extend(["-t", str(t)])
+        else:
+            cmd.extend(["-t", "/app/nuclei-templates"])
+
         severity = params.get("severity")
         if severity:
             cmd.extend(["-severity", str(severity)])
@@ -133,10 +160,31 @@ def build_cli_command(tool_name: str, params: dict[str, Any]) -> list[str]:
             "-w",
             f"/app/wordlists/{params.get('wordlist', 'common.txt')}",
             "-r",  # Follow redirects
+            # Auto-calibration: ffuf fires a batch of random-path requests first,
+            # learns the response the target gives for content that does NOT
+            # exist, and filters anything matching it. This is what kills the
+            # false positives on WAF/catch-all sites (e.g. Cloudflare answers
+            # 403 for every dotfile, which the old "-mc all -fc 404" matched as
+            # a "hit" — reporting .git/.env/.htpasswd as exposed when they are
+            # actually blocked). With -ac the uniform block response is filtered.
+            "-ac",
+            # Only surface codes that indicate a real, distinct resource. 403 and
+            # 404 are deliberately excluded: 403 is the standard WAF/deny answer
+            # (not an exposure) and 404 is absence. A genuinely exposed file
+            # returns 200/401/redirect and is still caught.
             "-mc",
-            "all",
-            "-fc",
-            "404",
+            "200,204,301,302,307,401,405,500",
+            # ffuf's default User-Agent gets blocked outright by at least one
+            # real target's Apache config (connection closes with EOF on every
+            # request, confirmed live) — a normal browser UA fixes it.
+            "-H",
+            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            # Cap concurrency: ffuf defaults to 40 threads, which trips
+            # burst-based rate limiting on real infrastructure.
+            "-t",
+            "10",
+            "-timeout",  # per-request; default is short and drops slow/IPv6-stalled hosts
+            "15",
             "-o",
             "-",
             "-of",

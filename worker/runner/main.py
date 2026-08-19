@@ -18,6 +18,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from arq import run_worker
 from arq.connections import RedisSettings
@@ -178,6 +179,20 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     logger.info("Worker shut down cleanly.")
 
 
+# Tools that can legitimately run past the generic 300s default. Confirmed
+# live: an unscoped nuclei -as call against the full ~14k-template set took
+# ~300s and hit the default timeout exactly — a scoped ~900-template run
+# completes in ~2:43, so the full set genuinely needs more than 5 minutes.
+# ffuf/sqlmap get the same floor since they scale with wordlist/param count
+# the same way. This only raises the floor — an explicitly larger
+# caller-provided timeout is still respected.
+_SLOW_TOOL_MIN_TIMEOUT = {
+    "run_nuclei": 600,
+    "run_ffuf": 450,
+    "run_sqlmap": 450,
+}
+
+
 async def run_tool_job(
     ctx: dict[str, Any],
     engagement_id: str,
@@ -189,10 +204,12 @@ async def run_tool_job(
     """ARQ job executing a single whitelisted tool call request."""
     logger.info("Worker received job: engagement=%s, tool=%s", engagement_id, tool_name)
 
+    effective_timeout = max(timeout_seconds, _SLOW_TOOL_MIN_TIMEOUT.get(tool_name, 0))
+
     result = await execute_tool_call(
         tool_name=tool_name,
         params=params,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=effective_timeout,
         output_cap_bytes=output_cap_bytes,
     )
 
@@ -263,11 +280,21 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
     tool_log.append({"tool": "httpx", "success": str(httpx_result.success), "exit_code": str(httpx_result.exit_code)})
 
     live_hosts: list[str] = []
+    live_hostnames: set[str] = set()
     if httpx_result.success and httpx_result.stdout:
         http_results = _parse_httpx_output(httpx_result.stdout)
         logger.info("[RECON 2/4] httpx found %d live hosts", len(http_results))
         for hr in http_results:
             live_hosts.append(hr.get("host") or hr.get("url", ""))
+            # Record the hostname of every URL httpx confirmed live, so the
+            # Python header/path prober (Step 2b) only touches hosts that
+            # actually resolve and respond — instead of fanning out across
+            # every enumerated subdomain, including ones with no DNS record
+            # (that produced ~150 "probe_failed" findings, one per attempted
+            # path on each dead host, and inflated the live-host count).
+            hostname = urlparse(hr.get("url", "")).netloc.split(":")[0]
+            if hostname:
+                live_hostnames.add(hostname)
             all_findings.append({
                 "type": "http_response",
                 "url": hr["url"],
@@ -331,30 +358,66 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
                 })
                 return resp, extra_findings
         except Exception as e3:
-            logger.warning("[RECON 2b] Stage 3 (Unverified) failed for %s: %s", url, e3)
+            logger.info("[RECON 2b] Stage 3 (Unverified) failed for %s: %s", url, e3)
+
+        # Stage 4: plain HTTP fallback. Some hosts don't serve HTTPS at all, so
+        # every TLS stage above fails on connection — not a cert/negotiation
+        # issue. Only meaningful if url was https://. A site reachable only over
+        # plain HTTP is itself a Medium finding (no transport encryption).
+        if url.startswith("https://"):
+            http_url = "http://" + url[len("https://"):]
+            try:
+                async with httpx_lib.AsyncClient(http2=False, verify=False, timeout=10.0, follow_redirects=True) as client:
+                    resp = await client.get(http_url, headers=headers)
+                    extra_findings.append({
+                        "type": "https_unavailable",
+                        "target": http_url,
+                        "severity": "medium",
+                        "cvss_score": 5.3,
+                        "tool": "http_prober",
+                        "description": f"{url} has no working HTTPS listener; site is only reachable over plain HTTP ({http_url})",
+                    })
+                    return resp, extra_findings
+            except Exception as e4:
+                logger.warning("[RECON 2b] Stage 4 (plain HTTP) failed for %s: %s", http_url, e4)
+                extra_findings.append({
+                    "type": "probe_failed",
+                    "target": url,
+                    "severity": "info",
+                    "cvss_score": 0.0,
+                    "tool": "http_prober",
+                    "description": f"Target {url} probe failed on all HTTPS stages and plain HTTP fallback: {e4}",
+                })
+        else:
             extra_findings.append({
                 "type": "probe_failed",
                 "target": url,
                 "severity": "info",
                 "cvss_score": 0.0,
                 "tool": "http_prober",
-                "description": f"Target {url} probe failed (connection refused/rate-limited: {e3})",
+                "description": f"Target {url} probe failed (connection refused/rate-limited)",
             })
 
         return None, extra_findings
 
-    targets_to_check = list(set([domain, domain.removeprefix("www.")] + subdomains))
-    logger.info("[RECON 2b] Probing security headers and common paths for targets: %s", targets_to_check)
+    # Only probe hosts httpx confirmed live. Probing unresolved/dead subdomains
+    # was the dominant noise source (every path attempt on a non-resolving host
+    # became a separate "probe_failed" finding). If httpx returned nothing at all
+    # (tool failure or an all-dead surface), fall back to probing just the apex
+    # so a working root domain is never skipped — but never fan back out across
+    # the unverified subdomain list.
+    targets_to_check = sorted(live_hostnames) or [domain]
+    logger.info("[RECON 2b] Inspecting security headers for %d live target(s): %s", len(targets_to_check), targets_to_check)
 
-    # Bounded concurrency: sequentially this loop was 1 (target) x 30s-per-unreachable-URL
-    # x (1 main + 11 paths) x N targets, which can burn the entire job_timeout on a domain
-    # with one unreachable hostname variant (e.g. bare apex with no HTTPS). Run fetches
-    # concurrently, capped so we don't hammer the target with dozens of simultaneous conns.
-    probe_paths = [
-        "/wp-admin", "/wp-login.php", "/config.php", "/wp-config.php",
-        "/configuration.php", "/sitemap.xml", "/crossdomain.xml",
-        "/.well-known/security.txt", "/api", "/swagger", "/graphql"
-    ]
+    # NOTE: this step inspects HTTP *security headers* only. Content/path
+    # discovery (finding /wp-config.php, /.git, backup files, etc.) is NOT done
+    # here — it is owned by the real `ffuf` binary, dispatched by the
+    # exploitation phase with auto-calibration (-ac). A previous Python
+    # path-prober here duplicated ffuf's job and, lacking ffuf's calibration,
+    # turned every path on soft-404/WAF catch-all sites into a false "exposed"
+    # finding. Header inspection stays because no scanner in the pipeline does
+    # it (httpx reports headers but doesn't flag *missing* security headers).
+    #
     # 8 concurrent connections against a single host tripped Vercel's edge
     # rate-limiting on a real test target (every probe came back refused).
     # 4 is still a large speedup over fully sequential while looking much
@@ -367,13 +430,18 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
 
     async def _probe_target(sub: str) -> list[dict[str, Any]]:
         findings: list[dict[str, Any]] = []
-        target_url = f"https://{sub}"
-        resp, probe_findings = await _bounded_fetch(target_url)
+        # _fetch_url_with_fallback already cascades HTTPS (3 TLS stages) -> plain
+        # HTTP internally, so a single call covers TLS-broken and HTTP-only hosts
+        # (and emits an https_unavailable finding for the latter). Use the
+        # response's actual URL — post-redirect / post-fallback — so findings
+        # point at the location that was really inspected, not the requested one.
+        resp, probe_findings = await _bounded_fetch(f"https://{sub}")
         findings.extend(probe_findings)
 
         if resp is not None:
+            actual_url = str(resp.url)
             resp_headers = {k.lower(): v for k, v in resp.headers.items()}
-            logger.info("[RECON 2b] Successfully fetched %s [HTTP %d] with %d headers", target_url, resp.status_code, len(resp_headers))
+            logger.info("[RECON 2b] Successfully fetched %s [HTTP %d] with %d headers", actual_url, resp.status_code, len(resp_headers))
 
             required_headers = [
                 ("content-security-policy", "Medium", 5.3, "Missing Content-Security-Policy header"),
@@ -390,30 +458,14 @@ async def run_recon(ctx: dict[str, Any], engagement_id: str, domain: str = "") -
                     findings.append({
                         "type": "missing_header",
                         "target": sub,
-                        "url": target_url,
+                        "url": actual_url,
                         "header": h_name,
                         "severity": sev.lower(),
                         "cvss_score": score,
                         "tool": "http_headers",
-                        "description": f"{desc} on {target_url}",
+                        "description": f"{desc} on {actual_url}",
                     })
 
-        path_results = await asyncio.gather(*(_bounded_fetch(f"https://{sub}{path}") for path in probe_paths))
-        for path, (p_resp, p_probe_findings) in zip(probe_paths, path_results):
-            findings.extend(p_probe_findings)
-            code = p_resp.status_code if p_resp is not None else 0
-            if code in (200, 403):
-                findings.append({
-                    "type": "path_probe",
-                    "target": sub,
-                    "url": f"https://{sub}{path}",
-                    "path": path,
-                    "status_code": code,
-                    "severity": "low" if code == 403 else "info",
-                    "cvss_score": 2.0 if code == 403 else 0.0,
-                    "tool": "path_probe",
-                    "description": f"Path {path} returned HTTP {code} on {sub}",
-                })
         return findings
 
     target_results = await asyncio.gather(*(_probe_target(sub) for sub in targets_to_check))

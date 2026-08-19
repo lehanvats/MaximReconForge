@@ -146,6 +146,14 @@ class LLMClient:
             kwargs["tool_choice"] = "auto"
         if response_format:
             kwargs["response_format"] = response_format
+        if role == "reporting":
+            # Bound the report's output tokens. Groq bills input + reserved
+            # output against the per-minute limit; without a cap the provider
+            # reserves the model's large default max, which pushes a single
+            # request over the free-tier TPM budget (HTTP 413). The compact
+            # context keeps input to ~3k tokens, so 4k output stays under the
+            # 8k free-tier TPM while leaving room for a full report.
+            kwargs.setdefault("max_tokens", 4000)
 
         if not settings.groq_api_key or settings.groq_api_key == "":
             logger.warning("GROQ_API_KEY is empty — returning fallback test response.")

@@ -19,6 +19,11 @@ ARG NAABU_VER=2.3.3
 ARG NUCLEI_VER=3.3.7
 ARG FFUF_VER=2.1.0
 ARG AMASS_VER=4.2.0
+# nuclei-templates release to bake in. Pinned + fetched as a tarball (below)
+# rather than via `nuclei -update-templates`, which resolves the release
+# through the GitHub *API* (60 req/hr unauthenticated) and silently installs
+# nothing when that quota is exhausted — a non-deterministic build failure.
+ARG NUCLEI_TEMPLATES_VER=10.4.7
 
 # Install pre-compiled Linux x86_64 binaries directly from official GitHub releases.
 # Add unzip -o flag so zip archives containing common files like LICENSE.md or README.md do not prompt.
@@ -53,19 +58,28 @@ RUN chown -R runner:runner /app /home/runner
 
 USER runner
 
-# Explicitly target a template directory baked into the image (not the
-# container's HOME/.config — that path is mounted as an empty tmpfs at
-# runtime per docker-compose.yml, so anything nuclei writes there during
-# build is invisible to the running container). /app/nuclei-templates is
-# part of the read-only root filesystem at runtime, which is fine — nuclei
-# only needs to read these, never write them.
+# Bake the nuclei templates into the image at a fixed, read-only path
+# (/app/nuclei-templates). executor.py always passes `-t /app/nuclei-templates`
+# so nuclei never needs to auto-detect or install them at runtime (the runtime
+# root filesystem is read-only, and HOME/.config is an empty tmpfs).
 #
-# IMPORTANT: no -duc (disable-update-check) here. Combined with
-# -update-templates it silently no-ops (nuclei reports success in ~10s but
-# installs nothing) — likely because disabling the update *check* also
-# skips the logic that decides an install is needed. -duc is fine (and
-# desirable) on the actual per-scan `nuclei` invocation in executor.py,
-# just not on this one-time install step.
-RUN nuclei -update-templates -ud /app/nuclei-templates
+# We download the templates as a release *tarball* from codeload (which is not
+# subject to the GitHub API's 60 req/hr unauthenticated limit) instead of
+# `nuclei -update-templates`, whose GitHub-API dependency silently no-ops when
+# that quota is exhausted, producing an image where every nuclei run dies with
+# "no templates found". The `[ "$COUNT" -gt 1000 ]` guard fails the build loudly
+# if the install ever comes up empty again, instead of shipping a broken image.
+# --retry 10/-C-/--max-time 1200: nuclei-templates is a large tarball and the
+# link to GitHub can be slow/flaky (observed ~80KB/s). Resume (-C -) plus
+# generous retries tolerate a mid-download drop instead of failing the build.
+RUN curl --retry 10 --retry-delay 5 --retry-all-errors -C - --max-time 1200 -fSL \
+        "https://codeload.github.com/projectdiscovery/nuclei-templates/tar.gz/refs/tags/v${NUCLEI_TEMPLATES_VER}" \
+        -o /tmp/nuclei-templates.tgz \
+    && mkdir -p /app/nuclei-templates \
+    && tar -xzf /tmp/nuclei-templates.tgz -C /app/nuclei-templates --strip-components=1 \
+    && rm /tmp/nuclei-templates.tgz \
+    && COUNT="$(find /app/nuclei-templates -name '*.yaml' | wc -l)" \
+    && echo "Installed ${COUNT} nuclei templates (v${NUCLEI_TEMPLATES_VER})" \
+    && { [ "${COUNT}" -gt 1000 ] || { echo "FATAL: nuclei template install produced only ${COUNT} templates" >&2; exit 1; }; }
 
 CMD ["python", "-m", "runner.main"]
