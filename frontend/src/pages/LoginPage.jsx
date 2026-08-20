@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
 function LoginPage() {
@@ -67,10 +67,7 @@ function LoginPage() {
         </form>
 
         <p className="mt-6 text-center text-[13px] text-[#a7aec8]">
-          No account?{" "}
-          <Link to="/register" className="font-semibold text-[#7c5cff] hover:underline">
-            Register
-          </Link>
+          Private deployment — no new registrations possible.
         </p>
       </div>
     </section>

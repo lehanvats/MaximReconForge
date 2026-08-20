@@ -1,69 +1,24 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import { Link } from "react-router-dom";
 
 function RegisterPage() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const { register } = useAuth();
-  const navigate = useNavigate();
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-    if (isSubmitting) return;
-
-    setError("");
-    setIsSubmitting(true);
-    try {
-      await register(email, password);
-      navigate("/scan", { replace: true });
-    } catch (err) {
-      setError(err.message || "Registration failed");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
   return (
     <section className="flex min-h-screen items-center justify-center px-6 pt-[100px] pb-16">
       <div className="w-[400px] max-w-full rounded-[22px] border border-white/8 bg-[rgba(15,19,40,0.72)] p-9 backdrop-blur-[18px]">
-        <h1 className="text-[26px] font-extrabold tracking-[-1px]">Create an account</h1>
+        <h1 className="text-[26px] font-extrabold tracking-[-1px]">Registration closed</h1>
         <p className="mt-2 text-[14px] text-[#a7aec8]">
-          Start mapping your attack surface.
+          This is a private deployment.
         </p>
 
-        <form onSubmit={handleSubmit} className="mt-7 flex flex-col gap-4">
-          <input
-            type="email"
-            required
-            placeholder="Email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            className="rounded-xl border border-white/10 bg-white/[0.06] px-4 py-3 text-[15px] text-white outline-none placeholder:text-white/40 focus:border-[#7c5cff]/50"
-          />
-          <input
-            type="password"
-            required
-            minLength={8}
-            placeholder="Password (min. 8 characters)"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            className="rounded-xl border border-white/10 bg-white/[0.06] px-4 py-3 text-[15px] text-white outline-none placeholder:text-white/40 focus:border-[#7c5cff]/50"
-          />
-
-          {error && <p className="text-[13px] text-[#ff6b6b]">{error}</p>}
-
+        <div className="mt-7 flex flex-col gap-4">
           <button
-            type="submit"
-            disabled={isSubmitting}
-            className="mt-2 rounded-full bg-white px-5 py-3 text-[14px] font-bold text-[#181468] transition hover:-translate-y-px hover:bg-[#f5f7ff] disabled:cursor-not-allowed disabled:opacity-60"
+            type="button"
+            disabled
+            aria-disabled="true"
+            className="rounded-full bg-white/10 px-5 py-3 text-[14px] font-bold text-white/50 cursor-not-allowed"
           >
-            {isSubmitting ? "Creating account..." : "Register"}
+            No new registrations possible
           </button>
-        </form>
+        </div>
 
         <p className="mt-6 text-center text-[13px] text-[#a7aec8]">
           Already have an account?{" "}

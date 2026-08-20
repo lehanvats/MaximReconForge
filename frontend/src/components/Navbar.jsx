@@ -94,12 +94,6 @@ function Navbar() {
             >
               Log in
             </Link>
-            <Link
-              to="/register"
-              className="whitespace-nowrap text-white/80 no-underline transition-colors hover:text-white"
-            >
-              Register
-            </Link>
           </div>
         )}
       </div>

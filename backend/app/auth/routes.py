@@ -20,14 +20,11 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/register", response_model=UserOut)
 async def register(payload: UserCreate, response: Response, db: AsyncSession = Depends(get_db)):
-    existing = await db.scalar(select(User).where(User.email == payload.email))
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    user = User(email=payload.email, hashed_password=hash_password(payload.password))
-    db.add(user)
-    await db.commit()
-    set_auth_cookies(response, create_access_token(str(user.id)), create_refresh_token(str(user.id)))
-    return user
+    # Registration is permanently disabled — this is a single-tenant, locked
+    # deployment. The only valid account is provisioned out-of-band via
+    # scripts/seed_admin.py. Reject every registration attempt at the API layer
+    # so the lock holds even if the frontend is bypassed.
+    raise HTTPException(status_code=403, detail="No new registrations possible.")
 
 @router.post("/login", response_model=UserOut)
 async def login(payload: UserLogin, response: Response, db: AsyncSession = Depends(get_db)):

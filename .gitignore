@@ -1,4 +1,8 @@
 .env
+# Any local env backups/variants (e.g. .env.bak.<ts>, .env.local) — never
+# commit these, they hold the same secrets as .env. .env.example stays tracked.
+.env.*
+!.env.example
 __pycache__/
 *.pyc
 .venv/
@@ -14,6 +18,4 @@ certbot/www/*
 *.db
 *.sqlite3
 
-
-# Claude Code local state — worktrees and machine-local settings must never be committed
-.claude/
+.claude
