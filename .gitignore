@@ -11,6 +11,9 @@ certbot/www/*
 !certbot/www/.gitkeep
 *.log
 .DS_Store
+*.db
+*.sqlite3
+
 
 # Claude Code local state — worktrees and machine-local settings must never be committed
 .claude/

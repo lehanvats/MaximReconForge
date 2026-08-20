@@ -25,22 +25,25 @@ class ContextStore:
             base_dir = os.environ.get("ENGAGEMENTS_DIR") or str(Path(__file__).resolve().parent.parent.parent.parent / "engagements")
         self.base_dir = Path(base_dir)
 
-    def get_engagement_dir(self, engagement_id: str) -> Path:
-        p = self.base_dir / engagement_id
+    def _ensure_dir(self, p: Path) -> Path:
         p.mkdir(parents=True, exist_ok=True)
+        try:
+            import os
+            os.chmod(p, 0o777)
+        except Exception:
+            pass
         return p
+
+    def get_engagement_dir(self, engagement_id: str) -> Path:
+        return self._ensure_dir(self.base_dir / engagement_id)
 
     def get_private_dir(self, engagement_id: str, role: str) -> Path:
         """Private folder read/write for role only."""
-        p = self.get_engagement_dir(engagement_id) / ".context" / role
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+        return self._ensure_dir(self.get_engagement_dir(engagement_id) / ".context" / role)
 
     def get_whiteboard_dir(self, engagement_id: str) -> Path:
         """Shared whiteboard directory."""
-        p = self.get_engagement_dir(engagement_id) / ".context" / "whiteboard"
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+        return self._ensure_dir(self.get_engagement_dir(engagement_id) / "whiteboard")
 
     # --- Agent Scratchpad (Private) ---
 

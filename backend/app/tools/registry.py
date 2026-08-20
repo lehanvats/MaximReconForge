@@ -173,7 +173,11 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         name="run_ffuf",
         description="Fuzz directories/paths on a target URL to discover hidden endpoints.",
         input_schema=FfufInput,
-        timeout_seconds=300,
+        # Matches the worker's ffuf timeout floor (_SLOW_TOOL_MIN_TIMEOUT). ffuf
+        # scales with wordlist size and can exceed the generic 300s; keeping the
+        # registry value >= the worker floor ensures the backend's result-wait
+        # (timeout + 60) always outlasts the actual worker run.
+        timeout_seconds=450,
         phase_available=["vuln_analysis", "exploitation"],
     ),
     "run_sqlmap": ToolDefinition(

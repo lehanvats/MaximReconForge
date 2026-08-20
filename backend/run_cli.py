@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
 
 async def run_assessment(target_domain: str, risky_enabled: bool = False) -> None:
     print("\n" + "=" * 65)
-    print(" 🛠️  MaximReconForge — Autonomous Assessment Engine")
+    print(" [+] MaximReconForge -- Autonomous Assessment Engine")
     print("=" * 65 + "\n")
 
     # 1. Validate Target Syntax & Scope
@@ -110,7 +110,7 @@ async def run_assessment(target_domain: str, risky_enabled: bool = False) -> Non
 
     # 4. Display & Report Summary
     print("\n" + "=" * 65)
-    print(" 🎉 Assessment Completed Successfully!")
+    print(" [+] Assessment Completed Successfully!")
     print("=" * 65)
     print(f" Status:             {final_state.get('status', 'completed')}")
     print(f" Scope Entries:      {len(final_state.get('scope_entries', []))}")
@@ -120,11 +120,11 @@ async def run_assessment(target_domain: str, risky_enabled: bool = False) -> Non
 
     report_path = eng_dir / "report" / "final_report.md"
     if report_path.exists():
-        print(f"\n 📄 Report Location: {report_path}")
+        print(f"\n [Report Location]: {report_path}")
         print("-" * 65)
         print(report_path.read_text(encoding="utf-8"))
     else:
-        print("\n ⚠️  Report file not found.")
+        print("\n [!] Report file not found.")
 
     print("\n" + "=" * 65 + "\n")
 

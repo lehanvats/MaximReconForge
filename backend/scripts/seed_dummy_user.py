@@ -8,8 +8,8 @@ from app.db.session import async_session
 from app.db.models import User
 from app.auth.security import hash_password
 
-DUMMY_EMAIL = "dummyemail@gmail.com"
-DUMMY_PASSWORD = "password123"
+DUMMY_EMAIL = "test@maximrecon.com"
+DUMMY_PASSWORD = "test1234"
 
 async def seed() -> None:
     async with async_session() as db:
