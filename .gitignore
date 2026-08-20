@@ -14,3 +14,6 @@ certbot/www/*
 *.db
 *.sqlite3
 
+
+# Claude Code local state — worktrees and machine-local settings must never be committed
+.claude/

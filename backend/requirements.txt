@@ -4,11 +4,11 @@ uvicorn[standard]==0.30.6
 pydantic[email]==2.9.2
 pydantic-settings==2.5.2
 python-multipart==0.0.9
+dnspython>=2.6                  # Direct dep of app/scanners/native.py (dns.resolver)
 
 # --- Database ---
 sqlalchemy==2.0.35
-asyncpg>=0.29.0
-aiosqlite>=0.20.0
+asyncpg==0.29.0
 alembic==1.13.2
 
 # --- Auth ---
